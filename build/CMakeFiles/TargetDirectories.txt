@@ -1,0 +1,3 @@
+C:/Users/yvess/Desktop/Private Projects/SoulSync/build/CMakeFiles/SoulSync.dir
+C:/Users/yvess/Desktop/Private Projects/SoulSync/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/yvess/Desktop/Private Projects/SoulSync/build/CMakeFiles/ZERO_CHECK.dir

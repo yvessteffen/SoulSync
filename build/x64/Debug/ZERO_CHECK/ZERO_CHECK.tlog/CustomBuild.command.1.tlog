@@ -1,0 +1,10 @@
+^C:\USERS\YVESS\DESKTOP\PRIVATE PROJECTS\SOULSYNC\BUILD\CMAKEFILES\C73A4E16686AC3E97EA8C9AA47A49F70\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" "-SC:/Users/yvess/Desktop/Private Projects/SoulSync" "-BC:/Users/yvess/Desktop/Private Projects/SoulSync/build" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "C:/Users/yvess/Desktop/Private Projects/SoulSync/build/SoulSync.slnx"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
