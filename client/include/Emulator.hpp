@@ -3,17 +3,27 @@
 #include <string>
 #include <memory>
 
+struct Framebuffer
+{
+    const void* pixels;
+    size_t stride;
+};
+
 class Emulator {
 public:
     Emulator();
     ~Emulator();
+
     bool initialize();
     bool loadRom(const std::string& path);
     void start();
     void runFrame();
-    const uint32_t* getFramebuffer() const;
-    unsigned getWidth() const;
-    unsigned getHeight() const;
+
+    unsigned getVideoWidth() const;
+    unsigned getVideoHeight() const;
+
+    Framebuffer getFramebuffer() const;
+
 
 private:
     struct Impl;

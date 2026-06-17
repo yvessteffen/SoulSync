@@ -1,6 +1,6 @@
 add_executable(SoulSyncClient
     src/main.cpp
-    src/Emulator.cpp
+    src/Core/Emulator.cpp
 )
 
 target_include_directories(SoulSyncClient PRIVATE

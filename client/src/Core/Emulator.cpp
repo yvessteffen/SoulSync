@@ -52,25 +52,28 @@ void Emulator::runFrame()
     impl->core->runFrame(impl->core);
 }
 
-const uint32_t* Emulator::getFramebuffer() const
+unsigned Emulator::getVideoWidth() const
 {
-    //return (const uint32_t*) impl->core->getPixels(impl->core);
-}
-
-unsigned Emulator::getWidth() const
-{
-    unsigned w, h;
-    
-     //TODO
-
+    unsigned w;
+    unsigned h;
+    impl->core->currentVideoSize(impl->core, &w, &h);
     return w;
 }
 
-unsigned Emulator::getHeight() const
+unsigned Emulator::getVideoHeight() const
 {
-    unsigned w, h;
-    
-    //TODO
-
+    unsigned w;
+    unsigned h;
+    impl->core->currentVideoSize(impl->core, &w, &h);
     return h;
+}
+
+Framebuffer Emulator::getFramebuffer() const
+{
+    const void* buffer = nullptr;
+    size_t stride = 0;
+
+    impl->core->getPixels(impl->core, &buffer, &stride);
+
+    return { buffer, stride };
 }
