@@ -4,15 +4,19 @@ add_executable(SoulSyncClient
 )
 
 target_include_directories(SoulSyncClient PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-
-target_compile_definitions(SoulSyncClient PRIVATE ENABLE_VFS)
 
 target_link_libraries(SoulSyncClient PRIVATE
     mgba
-    ${CMAKE_SOURCE_DIR}/external/mgba/build/libpng/Release/libpng16_static.lib
-    ${CMAKE_SOURCE_DIR}/external/mgba/build/zlib/Release/zlibstatic.lib
     Shlwapi
     ws2_32
+)
+
+target_compile_definitions(SoulSyncClient PRIVATE
+    ENABLE_VFS
+    ENABLE_DIRECTORIES
+    ENABLE_VFS_FD
+    M_CORE_GBA
 )
