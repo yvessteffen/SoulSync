@@ -12,7 +12,7 @@ extern "C" {
 struct Emulator::Impl {
     mCore*       core   = nullptr;
     mCoreConfig  config {};
-    mCoreThread  thread {};
+    uint32_t     videoBuffer[256 * 160] = {};
 };
 
 Emulator::Emulator() { impl = std::make_unique<Impl>(); }
@@ -32,7 +32,8 @@ bool Emulator::initialize()
     printf("unloadROM   = %p\n", (void*)impl->core->unloadROM);
 
     mCoreInitConfig(impl->core, nullptr);
-    impl->core->loadConfig;
+    //impl->core->loadConfig(impl->core, &impl->config);
+    impl->core->setVideoBuffer(impl->core, impl->videoBuffer, 256);
 
     return true;
 }
@@ -52,22 +53,6 @@ void Emulator::runFrame()
     impl->core->runFrame(impl->core);
 }
 
-unsigned Emulator::getVideoWidth() const
-{
-    unsigned w;
-    unsigned h;
-    impl->core->currentVideoSize(impl->core, &w, &h);
-    return w;
-}
-
-unsigned Emulator::getVideoHeight() const
-{
-    unsigned w;
-    unsigned h;
-    impl->core->currentVideoSize(impl->core, &w, &h);
-    return h;
-}
-
 Framebuffer Emulator::getFramebuffer() const
 {
     const void* buffer = nullptr;
@@ -75,5 +60,8 @@ Framebuffer Emulator::getFramebuffer() const
 
     impl->core->getPixels(impl->core, &buffer, &stride);
 
-    return { buffer, stride };
+    unsigned w = 0, h = 0;
+    impl->core->currentVideoSize(impl->core, &w, &h);
+
+    return { buffer, stride, w, h };
 }
