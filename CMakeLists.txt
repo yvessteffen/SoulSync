@@ -24,3 +24,4 @@ set(ENABLE_DIRECTORIES ON CACHE BOOL "" FORCE)
 
 add_subdirectory(external/mgba)
 add_subdirectory(client)
+add_subdirectory(server)

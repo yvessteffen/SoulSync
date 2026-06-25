@@ -15,16 +15,6 @@ constexpr auto FRAME_DURATION = duration<double>(1.0 / 59.7275);
 const int width = 240;
 const int height = 160;
 
-
-std::string basePath = SDL_GetBasePath();
-std::string rompath = basePath + "/data/rom/" + "rom.gba";
-std::string randomizedrompath = basePath + "/data/randomizedrom/" + "randomized.gba";
-std::string randomizerpath = basePath + "/data/randomizer/" + "randomizer.jar";
-std::string settingspath = basePath + "/data/settings/" + "settings.rnqs";
-std::string savepath = basePath + "/data/randomizedrom/" + "randomized.sav";
-std::string backuppath = basePath + "/data/backupsave/";
-std::string inipath = basePath + "soulsync.ini";
-
 #ifndef NDEBUG
 #define DEBUG_LOG(x) std::cerr << x << '\n'
 #else
@@ -33,11 +23,16 @@ std::string inipath = basePath + "soulsync.ini";
 
 int main()
 {
-    DEBUG_LOG("SoulSync Client");
-
-    Emulator emulator;
-
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD);
+
+    std::string basePath = SDL_GetBasePath();
+    std::string rompath = basePath + "/data/rom/" + "rom.gba";
+    std::string randomizedrompath = basePath + "/data/randomizedrom/" + "randomized.gba";
+    std::string randomizerpath = basePath + "/data/randomizer/" + "randomizer.jar";
+    std::string settingspath = basePath + "/data/settings/" + "settings.rnqs";
+    std::string savepath = basePath + "/data/randomizedrom/" + "randomized.sav";
+    std::string backuppath = basePath + "/data/backupsave/";
+    std::string inipath = basePath + "/soulsync.ini";
 
     Config config;
     config.load(inipath);
@@ -93,8 +88,8 @@ int main()
     float turboSpeed = std::stof(config.get("emulator", "turbo_speed", "3.0"));
     auto FRAME_DURATION_TURBO = duration<double>(1.0 / (59.7275 * turboSpeed));
     int streamingFps = std::stoi(config.get("streaming", "fps", "30"));
-    int frameSkip = (int)round(59.7275 / streamingFps);
 
+    Emulator emulator;
     if (!emulator.initialize()) {
         DEBUG_LOG("init failed");
         return 1;
@@ -114,6 +109,7 @@ int main()
     #ifndef NDEBUG
     DEBUG_LOG("Save loaded\n");
     #endif
+
     int count = 0;
     SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     SDL_Gamepad* controller = nullptr;
@@ -172,7 +168,7 @@ int main()
     Capture capture(256, height);
     FrameQueue<Frame> frameQueue;
     uint64_t frameNumber = 0;
-    int recordFrameCount = 0;
+    int frame = 0;
     Encoder encoder;
     std::string recordPath = basePath + "data/recordings/output.mkv";
     // create recordings dir if needed
@@ -235,6 +231,7 @@ int main()
             if (triggerPressed && !triggerWasPressed)
             {
                 turboActive = !turboActive;
+                frame = 0;
                 SDL_SetAudioStreamFrequencyRatio(
                     emulator.getAudioStream(),
                     turboActive ? turboSpeed : 1.0f
@@ -250,22 +247,32 @@ int main()
         emulator.runFrame();
         emulator.processAudio();
 
-        Framebuffer fb = emulator.getFramebuffer();
+        const Framebuffer& fb = emulator.getFramebuffer();
+        frame++;
 
-        if (!turboActive && ++recordFrameCount % frameSkip == 0)
+        if(!turboActive && (frame % (60/streamingFps) == 0))
         {
-            Frame frame = capture.capture(
+            Frame videoframe = capture.capture(
                 static_cast<const uint32_t*>(fb.pixels),
                 frameNumber++
             );
-            encoder.encodeFrame(frame.pixels.data(), frame.width, frame.height);
-            //SDL_UpdateTexture(stream1Texture, nullptr, decode(encodedFrame), 256 * 4);
-            frameQueue.push(std::move(frame));
+            encoder.encodeFrame(videoframe.pixels.data(), videoframe.width, videoframe.height);
+            frameQueue.push(std::move(videoframe));
+            frame = 0;
+        } else {
+            if(turboActive && (frame % (60/streamingFps*int(turboSpeed)) == 0)){
+                Frame videoframe = capture.capture(
+                    static_cast<const uint32_t*>(fb.pixels),
+                    frameNumber++
+                );
+                encoder.encodeFrame(videoframe.pixels.data(), videoframe.width, videoframe.height);
+                frameQueue.push(std::move(videoframe));
+                frame = 0;
+            }
         }
 
         SDL_UpdateTexture(emuTexture, nullptr, fb.pixels, 256 * 4);
     
-
         SDL_RenderClear(emuRenderer);
         SDL_RenderClear(stream1Renderer);
         SDL_RenderClear(stream2Renderer);
