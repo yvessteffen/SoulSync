@@ -1,15 +1,20 @@
 #include <iostream>
-#include "Emulator.hpp"
+#include "Emulator/Emulator.hpp"
+#include "Video/Capture.hpp"
+#include "Video/Framequeue.hpp"
+#include "Video/Encoder.hpp"
 #include <chrono>
 #include <thread>
 #include <SDL3/SDL.h>
-#include "Config.hpp"
+#include "Emulator/config.hpp"
+#include "filesystem"
 
 using namespace std::chrono;
 
 constexpr auto FRAME_DURATION = duration<double>(1.0 / 59.7275);
 const int width = 240;
 const int height = 160;
+
 
 std::string basePath = SDL_GetBasePath();
 std::string rompath = basePath + "/data/rom/" + "rom.gba";
@@ -20,9 +25,15 @@ std::string savepath = basePath + "/data/randomizedrom/" + "randomized.sav";
 std::string backuppath = basePath + "/data/backupsave/";
 std::string inipath = basePath + "soulsync.ini";
 
+#ifndef NDEBUG
+#define DEBUG_LOG(x) std::cerr << x << '\n'
+#else
+#define DEBUG_LOG(x) ((void)0)
+#endif
+
 int main()
 {
-    std::cout << "SoulSync Client\n";
+    DEBUG_LOG("SoulSync Client");
 
     Emulator emulator;
 
@@ -81,25 +92,28 @@ int main()
     int16_t triggerThreshold = (int16_t)std::stoi(config.get("controller_axis", "right_trigger_threshold", "16000"));
     float turboSpeed = std::stof(config.get("emulator", "turbo_speed", "3.0"));
     auto FRAME_DURATION_TURBO = duration<double>(1.0 / (59.7275 * turboSpeed));
+    int streamingFps = std::stoi(config.get("streaming", "fps", "30"));
+    int frameSkip = (int)round(59.7275 / streamingFps);
 
     if (!emulator.initialize()) {
-        std::cout << "init failed\n";
+        DEBUG_LOG("init failed");
         return 1;
     }
-    std::cout << "Emulator initialized\n";
+    DEBUG_LOG("Emulator initialized\n");
 
     if (!emulator.loadRom(rompath)) {
-        std::cerr << "Failed to load ROM\n";
+        DEBUG_LOG("Failed to load ROM\n");
         return 1;
     }
-    std::cout << "Rom loaded\n";
+    DEBUG_LOG("Rom loaded\n");
 
     if (!emulator.loadSave(savepath.c_str())) {
-        std::cerr << "Failed to load Savegame\n";
+        DEBUG_LOG("Failed to load Savegame\n");
         return 1;
     }
-    std::cout << "Save loaded\n";
-
+    #ifndef NDEBUG
+    DEBUG_LOG("Save loaded\n");
+    #endif
     int count = 0;
     SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
     SDL_Gamepad* controller = nullptr;
@@ -111,12 +125,13 @@ int main()
             {
                 controller = SDL_OpenGamepad(joysticks[i]);
                 if (controller)
-                    std::cout << "Controller: " << SDL_GetGamepadName(controller) << "\n";
+                    DEBUG_LOG("Controller: " << SDL_GetGamepadName(controller) << "\n");
                 break;
             }
         }
     }
 
+    //SDL_CreateWindowAndRenderer();
     SDL_Window* emuWindow = SDL_CreateWindow("SoulLink GBA", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
     SDL_Window* stream1Window = SDL_CreateWindow("Stream 1", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
     SDL_Window* stream2Window = SDL_CreateWindow("Stream 2", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
@@ -145,14 +160,25 @@ int main()
 
     emulator.start();
     if (!emulator.initAudio(48000)) {
-        std::cerr << "Failed to init audio\n";
+        DEBUG_LOG("Failed to init audio\n");
         return 1;
     }
-    std::cout << "Emulator started\n";
+    DEBUG_LOG("Emulator started\n");
 
     bool running = true;
     bool turboActive = false;
     bool triggerWasPressed = false;
+
+    Capture capture(256, height);
+    FrameQueue<Frame> frameQueue;
+    uint64_t frameNumber = 0;
+    int recordFrameCount = 0;
+    Encoder encoder;
+    std::string recordPath = basePath + "data/recordings/output.mkv";
+    // create recordings dir if needed
+    std::filesystem::create_directories(basePath + "data/recordings");
+    encoder.open(recordPath, width, height, streamingFps);
+
     while (running)
     {
         auto start = steady_clock::now();
@@ -226,7 +252,19 @@ int main()
 
         Framebuffer fb = emulator.getFramebuffer();
 
+        if (!turboActive && ++recordFrameCount % frameSkip == 0)
+        {
+            Frame frame = capture.capture(
+                static_cast<const uint32_t*>(fb.pixels),
+                frameNumber++
+            );
+            encoder.encodeFrame(frame.pixels.data(), frame.width, frame.height);
+            //SDL_UpdateTexture(stream1Texture, nullptr, decode(encodedFrame), 256 * 4);
+            frameQueue.push(std::move(frame));
+        }
+
         SDL_UpdateTexture(emuTexture, nullptr, fb.pixels, 256 * 4);
+    
 
         SDL_RenderClear(emuRenderer);
         SDL_RenderClear(stream1Renderer);
@@ -259,6 +297,8 @@ int main()
     SDL_DestroyWindow(emuWindow);
     SDL_DestroyWindow(stream1Window);
     SDL_DestroyWindow(stream2Window);
+
+    encoder.close();
 
     SDL_Quit();
     return 0;

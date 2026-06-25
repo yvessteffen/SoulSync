@@ -1,4 +1,4 @@
-#include "Config.hpp"
+#include "Emulator/Config.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>

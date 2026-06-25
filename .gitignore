@@ -34,7 +34,8 @@ compile_commands.json
 .vscode/
 
 # External dependencies (if not using git submodules)
-# external/mgba/
+external/
+
 
 # OS
 .DS_Store

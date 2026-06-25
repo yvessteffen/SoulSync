@@ -1,4 +1,4 @@
-#include "Emulator.hpp"
+#include "Emulator/Emulator.hpp"
 
 extern "C" {
 #include <mgba/core/core.h>
@@ -13,6 +13,12 @@ extern "C" {
 #include <cstdio>
 #include <iostream>
 #include <SDL3/SDL.h>
+
+#ifndef NDEBUG
+#define DEBUG_LOG(x) std::cerr << x << '\n'
+#else
+#define DEBUG_LOG(x) ((void)0)
+#endif
 
 struct Emulator::Impl {
     mCore*       core   = nullptr;
@@ -63,8 +69,8 @@ bool Emulator::initialize()
     impl->core->setVideoBuffer(impl->core, impl->videoBuffer, 256);
     impl->core->setAudioBufferSize(impl->core, impl->opts.audioBuffers);
 
-    std::cout << "volume = " << impl->core->opts.volume << "\n";
-    std::cout << "audioBuffers = " << impl->core->opts.audioBuffers << "\n";
+    DEBUG_LOG("volume = " << impl->core->opts.volume << "\n");
+    DEBUG_LOG("audioBuffers = " << impl->core->opts.audioBuffers << "\n");
 
     return true;
 }
@@ -110,13 +116,13 @@ bool Emulator::initAudio(int targetSampleRate)
         nullptr
     );
     if (!impl->audioStream) {
-        std::cerr << "Failed to open audio stream: " << SDL_GetError() << "\n";
+        DEBUG_LOG("Failed to open audio stream: " << SDL_GetError() << "\n");
         return false;
     }
 
     SDL_AudioSpec obtained;
     SDL_GetAudioStreamFormat(impl->audioStream, nullptr, &obtained);
-    std::cout << "Audio obtained: freq=" << obtained.freq << "\n";
+    DEBUG_LOG("Audio obtained: freq=" << obtained.freq << "\n");
 
     mAudioBufferInit(&impl->resampledBuffer, 8192, obtained.channels);
     mAudioResamplerInit(&impl->resampler, mINTERPOLATOR_SINC);
