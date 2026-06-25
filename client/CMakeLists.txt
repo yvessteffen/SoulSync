@@ -1,8 +1,10 @@
-find_package(SDL2 CONFIG REQUIRED)
+find_package(SDL3 CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 
 add_executable(SoulSyncClient
     src/main.cpp
     src/Core/Emulator.cpp
+    src/config.cpp
 )
 
 target_include_directories(SoulSyncClient PRIVATE
@@ -14,7 +16,8 @@ target_link_libraries(SoulSyncClient PRIVATE
     mgba
     Shlwapi
     ws2_32
-    SDL2::SDL2
+    SDL3::SDL3
+    imgui::imgui
 )
 
 target_compile_definitions(SoulSyncClient PRIVATE
