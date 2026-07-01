@@ -19,31 +19,15 @@ Encoder::~Encoder()
     close();
 }
 
-bool Encoder::open(const std::string& outputPath, int width, int height, int fps)
+bool Encoder::open(int width, int height, int fps)
 {
     mWidth  = width;
     mHeight = height;
-
-    avformat_alloc_output_context2(&mFmtCtx, nullptr, nullptr, outputPath.c_str());
-    if (!mFmtCtx)
-    {
-        std::cerr << "Could not allocate format context\n";
-        return false;
-    }
-    std::cout << "Format: " << mFmtCtx->oformat->name << "\n";
-    std::cout << "Output: " << outputPath << "\n";
 
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_H264);
     if (!codec)
     {
         std::cerr << "H.264 encoder not found\n";
-        return false;
-    }
-
-    mStream = avformat_new_stream(mFmtCtx, codec);
-    if (!mStream)
-    {
-        std::cerr << "Could not create stream\n";
         return false;
     }
 
@@ -59,36 +43,18 @@ bool Encoder::open(const std::string& outputPath, int width, int height, int fps
     mCodecCtx->time_base = { 1, fps };
     mCodecCtx->framerate = { fps, 1 };
     mCodecCtx->pix_fmt   = AV_PIX_FMT_YUV444P;
-    mCodecCtx->gop_size = fps * 2;
+    mCodecCtx->gop_size  = fps * 2;
 
-    av_opt_set(mCodecCtx->priv_data, "crf", "16", 0);
-    av_opt_set(mCodecCtx->priv_data, "profile", "high444", 0);
-    av_opt_set(mCodecCtx->priv_data, "tune", "animation", 0);
+    av_opt_set(mCodecCtx->priv_data, "crf",     "16",        0);
+    av_opt_set(mCodecCtx->priv_data, "profile", "high444",   0);
+    av_opt_set(mCodecCtx->priv_data, "tune",    "animation", 0);
 
-    if (mFmtCtx->oformat->flags & AVFMT_GLOBALHEADER)
-        mCodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
-    if (avcodec_open2(mCodecCtx, codec, nullptr) < 0)
+    int ret = avcodec_open2(mCodecCtx, codec, nullptr);
+    if (ret < 0)
     {
-        std::cerr << "Could not open codec\n";
-        return false;
-    }
-
-    avcodec_parameters_from_context(mStream->codecpar, mCodecCtx);
-    mStream->time_base = mCodecCtx->time_base;
-
-    if (!(mFmtCtx->oformat->flags & AVFMT_NOFILE))
-    {
-        if (avio_open(&mFmtCtx->pb, outputPath.c_str(), AVIO_FLAG_WRITE) < 0)
-        {
-            std::cerr << "Could not open output file\n";
-            return false;
-        }
-    }
-
-    if (avformat_write_header(mFmtCtx, nullptr) < 0)
-    {
-        std::cerr << "Could not write header\n";
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        std::cerr << err << '\n';
         return false;
     }
 
@@ -96,7 +62,11 @@ bool Encoder::open(const std::string& outputPath, int width, int height, int fps
     mFrame->format = AV_PIX_FMT_YUV444P;
     mFrame->width  = width;
     mFrame->height = height;
-    av_frame_get_buffer(mFrame, 0);
+    if (av_frame_get_buffer(mFrame, 0) < 0)
+    {
+        std::cerr << "Could not allocate frame buffer\n";
+        return false;
+    }
 
     mPacket = av_packet_alloc();
 
@@ -108,55 +78,33 @@ bool Encoder::open(const std::string& outputPath, int width, int height, int fps
 
     mOpen     = true;
     mFrameIdx = 0;
-    std::cout << "VideoEncoder opened: " << outputPath << "\n";
     return true;
 }
 
-void Encoder::encodeFrame(const uint8_t* pixels, int width, int height)
+std::vector<uint8_t> Encoder::encodeFrame(const uint8_t* pixels, int width, int height)
 {
-    if (!mOpen) return;
+    std::vector<uint8_t> result;
+    if (!mOpen) return result;
 
     const uint8_t* srcSlice[1] = { pixels };
-    int srcStride[1] = { 256 * 4 };    
+    int srcStride[1] = { 256 * 4 };
     sws_scale(mSwsCtx, srcSlice, srcStride, 0, height,
               mFrame->data, mFrame->linesize);
 
     mFrame->pts = mFrameIdx++;
 
-    int ret = avcodec_send_frame(mCodecCtx, mFrame);
-    if (ret < 0)
-    {
-        char err[64];
-        av_strerror(ret, err, sizeof(err));
-        std::cerr << "Error sending frame: " << err << "\n";
-        return;
-    }
+    if (avcodec_send_frame(mCodecCtx, mFrame) < 0)
+        return result;
 
-    while ((ret = avcodec_receive_packet(mCodecCtx, mPacket)) == 0)
+    while (avcodec_receive_packet(mCodecCtx, mPacket) == 0)
     {
-        static int pktCount = 0;
-        if (++pktCount <= 3)
-            std::cout << "packet: pts=" << mPacket->pts 
-                      << " size=" << mPacket->size << "\n";
-
-        av_packet_rescale_ts(mPacket, mCodecCtx->time_base, mStream->time_base);
-        mPacket->stream_index = mStream->index;
-        int writeRet = av_interleaved_write_frame(mFmtCtx, mPacket);
-        if (writeRet < 0)
-        {
-            char err[64];
-            av_strerror(writeRet, err, sizeof(err));
-            std::cerr << "Error writing packet: " << err << "\n";
-        }
+        size_t offset = result.size();
+        result.resize(offset + mPacket->size);
+        std::memcpy(result.data() + offset, mPacket->data, mPacket->size);
         av_packet_unref(mPacket);
     }
 
-    if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
-    {
-        char err[64];
-        av_strerror(ret, err, sizeof(err));
-        std::cerr << "Error receiving packet: " << err << "\n";
-    }
+    return result;
 }
 
 void Encoder::close()
@@ -168,24 +116,13 @@ void Encoder::close()
     avcodec_send_frame(mCodecCtx, nullptr);
     while (avcodec_receive_packet(mCodecCtx, mPacket) == 0)
     {
-        av_packet_rescale_ts(mPacket, mCodecCtx->time_base, mStream->time_base);
-        mPacket->stream_index = mStream->index;
-        av_interleaved_write_frame(mFmtCtx, mPacket);
         av_packet_unref(mPacket);
     }
-
-    av_write_trailer(mFmtCtx);
 
     avcodec_free_context(&mCodecCtx);
     av_frame_free(&mFrame);
     av_packet_free(&mPacket);
     sws_freeContext(mSwsCtx);
 
-    if (!(mFmtCtx->oformat->flags & AVFMT_NOFILE))
-        avio_closep(&mFmtCtx->pb);
-
-    avformat_free_context(mFmtCtx);
-    mFmtCtx  = nullptr;
     mSwsCtx  = nullptr;
-    mStream  = nullptr;
 }

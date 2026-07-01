@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <cstdint>
 
 struct AVCodecContext;
@@ -14,8 +15,8 @@ class Encoder
         Encoder();
         ~Encoder();
 
-        bool open(const std::string& outputPath, int width, int height, int fps);
-        void encodeFrame(const uint8_t* pixels, int width, int height);
+        bool open(int width, int height, int fps);
+        std::vector<uint8_t> encodeFrame(const uint8_t* pixels, int width, int height);
         void close();
 
     private:

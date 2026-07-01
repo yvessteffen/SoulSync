@@ -3,11 +3,16 @@
 #include "Video/Capture.hpp"
 #include "Video/Framequeue.hpp"
 #include "Video/Encoder.hpp"
+#include "Video/Decoder.hpp"
 #include <chrono>
 #include <thread>
 #include <SDL3/SDL.h>
 #include "Emulator/config.hpp"
 #include "filesystem"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include "Packet.hpp"
 
 using namespace std::chrono;
 
@@ -21,9 +26,26 @@ const int height = 160;
 #define DEBUG_LOG(x) ((void)0)
 #endif
 
+struct ReceiveState
+{
+    PacketHeader header {};
+    int headerReceived = 0;
+    std::vector<uint8_t> body;
+    int bodyReceived = 0;
+    bool headerDone = false;
+};
+
+struct WindowManager {
+    SDL_Window* parent = nullptr;
+    std::vector<SDL_Window*> children;
+};
+
 int main()
 {
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD);
+
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2,2), &wsa);
 
     std::string basePath = SDL_GetBasePath();
     std::string rompath = basePath + "/data/rom/" + "rom.gba";
@@ -85,9 +107,14 @@ int main()
 
     int16_t deadzone = (int16_t)std::stoi(config.get("controller_axis", "deadzone", "8000"));
     int16_t triggerThreshold = (int16_t)std::stoi(config.get("controller_axis", "right_trigger_threshold", "16000"));
+
     float turboSpeed = std::stof(config.get("emulator", "turbo_speed", "3.0"));
     auto FRAME_DURATION_TURBO = duration<double>(1.0 / (59.7275 * turboSpeed));
     int streamingFps = std::stoi(config.get("streaming", "fps", "30"));
+
+    auto IP = config.get("streaming", "serverIP", "");
+    auto senderID = config.get("name", "name", "Yves");
+    PCSTR serverIP = IP.c_str();
 
     Emulator emulator;
     if (!emulator.initialize()) {
@@ -106,9 +133,30 @@ int main()
         DEBUG_LOG("Failed to load Savegame\n");
         return 1;
     }
-    #ifndef NDEBUG
     DEBUG_LOG("Save loaded\n");
-    #endif
+
+    SOCKET streamSock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (streamSock == INVALID_SOCKET)
+    {
+        DEBUG_LOG("Socket creation failed\n");
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(5000);
+    inet_pton(AF_INET, serverIP, &addr.sin_addr);
+
+    int result = connect(streamSock, (sockaddr*)&addr, sizeof(addr));
+
+    if (result == SOCKET_ERROR)
+    {
+        DEBUG_LOG("Connect failed: " << WSAGetLastError() << "\n");
+    }
+    else
+    {
+        DEBUG_LOG("Connected to relay server\n");
+    }
 
     int count = 0;
     SDL_JoystickID* joysticks = SDL_GetJoysticks(&count);
@@ -129,12 +177,12 @@ int main()
 
     //SDL_CreateWindowAndRenderer();
     SDL_Window* emuWindow = SDL_CreateWindow("SoulLink GBA", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
-    SDL_Window* stream1Window = SDL_CreateWindow("Stream 1", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
-    SDL_Window* stream2Window = SDL_CreateWindow("Stream 2", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
+    SDL_Window* stream1Window = nullptr;
+    SDL_Window* stream2Window = nullptr;
 
     SDL_Renderer* emuRenderer     = SDL_CreateRenderer(emuWindow,     nullptr);
-    SDL_Renderer* stream1Renderer = SDL_CreateRenderer(stream1Window, nullptr);
-    SDL_Renderer* stream2Renderer = SDL_CreateRenderer(stream2Window, nullptr);
+    SDL_Renderer* stream1Renderer = nullptr;
+    SDL_Renderer* stream2Renderer = nullptr;
 
     SDL_Texture* emuTexture = SDL_CreateTexture(
         emuRenderer, SDL_PIXELFORMAT_XBGR8888,
@@ -142,17 +190,8 @@ int main()
     );
     SDL_SetTextureScaleMode(emuTexture, SDL_SCALEMODE_NEAREST);
 
-    SDL_Texture* stream1Texture = SDL_CreateTexture(
-        stream1Renderer, SDL_PIXELFORMAT_RGBA32,
-        SDL_TEXTUREACCESS_STREAMING, width, height
-    );
-    SDL_SetTextureScaleMode(stream1Texture, SDL_SCALEMODE_NEAREST);
-
-    SDL_Texture* stream2Texture = SDL_CreateTexture(
-        stream2Renderer, SDL_PIXELFORMAT_RGBA32,
-        SDL_TEXTUREACCESS_STREAMING, width, height
-    );
-    SDL_SetTextureScaleMode(stream2Texture, SDL_SCALEMODE_NEAREST);
+    SDL_Texture* stream1Texture = nullptr;
+    SDL_Texture* stream2Texture = nullptr;
 
     emulator.start();
     if (!emulator.initAudio(48000)) {
@@ -164,16 +203,31 @@ int main()
     bool running = true;
     bool turboActive = false;
     bool triggerWasPressed = false;
+    bool stream1FirstReceive = true;
+    bool stream2FirstReceive= true;
 
     Capture capture(256, height);
     FrameQueue<Frame> frameQueue;
     uint64_t frameNumber = 0;
     int frame = 0;
     Encoder encoder;
-    std::string recordPath = basePath + "data/recordings/output.mkv";
-    // create recordings dir if needed
-    std::filesystem::create_directories(basePath + "data/recordings");
-    encoder.open(recordPath, width, height, streamingFps);
+    encoder.open(width, height, streamingFps);
+
+    Decoder stream1Decoder;
+    Decoder stream2Decoder;
+
+    stream1Decoder.open();    
+    stream2Decoder.open();
+
+    ReceiveState recvState1;
+    std::vector<uint8_t> decodedPixels1;
+    int decodedW1 = 0, decodedH1 = 0;
+
+    std::vector<uint8_t> decodedPixels2;
+    int decodedW2 = 0, decodedH2 = 0;
+
+    u_long nonBlocking = 1;
+    ioctlsocket(streamSock, FIONBIO, &nonBlocking);
 
     while (running)
     {
@@ -183,7 +237,12 @@ int main()
         while (SDL_PollEvent(&e))
         {
             if (e.type == SDL_EVENT_QUIT) running = false;
-            if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
+            if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                SDL_Window* win = SDL_GetWindowFromID(e.window.windowID);
+                if (win) {
+                    SDL_DestroyWindow(win);
+                }
+            }
             if (e.type == SDL_EVENT_GAMEPAD_ADDED && controller == nullptr)
                 controller = SDL_OpenGamepad(e.cdevice.which);
             if (e.type == SDL_EVENT_GAMEPAD_REMOVED)
@@ -250,13 +309,15 @@ int main()
         const Framebuffer& fb = emulator.getFramebuffer();
         frame++;
 
+        std::vector<uint8_t> encodedFrame;
+
         if(!turboActive && (frame % (60/streamingFps) == 0))
         {
             Frame videoframe = capture.capture(
                 static_cast<const uint32_t*>(fb.pixels),
                 frameNumber++
             );
-            encoder.encodeFrame(videoframe.pixels.data(), videoframe.width, videoframe.height);
+            encodedFrame = encoder.encodeFrame(videoframe.pixels.data(),videoframe.width,videoframe.height);
             frameQueue.push(std::move(videoframe));
             frame = 0;
         } else {
@@ -265,25 +326,88 @@ int main()
                     static_cast<const uint32_t*>(fb.pixels),
                     frameNumber++
                 );
-                encoder.encodeFrame(videoframe.pixels.data(), videoframe.width, videoframe.height);
+                encodedFrame = encoder.encodeFrame(videoframe.pixels.data(),videoframe.width,videoframe.height);
                 frameQueue.push(std::move(videoframe));
                 frame = 0;
             }
         }
 
+        if (!encodedFrame.empty())
+        {
+            PacketHeader h;
+            h.type = 1;
+            std::strncpy(h.senderId, senderID.c_str(), sizeof(h.senderId));
+            h.senderId[sizeof(h.senderId) - 1] = '\0';
+            h.size = (uint32_t)encodedFrame.size();
+
+            send(streamSock, (char*)&h, sizeof(h), 0);
+            send(streamSock, (char*)encodedFrame.data(), h.size, 0);
+        }
+
+        // receive header
+        if (!recvState1.headerDone)
+        {
+            int r = recv(streamSock,
+                        (char*)&recvState1.header + recvState1.headerReceived,
+                        sizeof(PacketHeader) - recvState1.headerReceived,
+                        0);
+            if (r > 0)
+            {
+                recvState1.headerReceived += r;
+                if (recvState1.headerReceived == sizeof(PacketHeader))
+                {
+                    recvState1.headerDone = true;
+                    recvState1.body.resize(recvState1.header.size);
+                    recvState1.bodyReceived = 0;
+                }
+            }
+        }
+
+        // receive body
+        if (recvState1.headerDone)
+        {
+            if (stream1FirstReceive){
+                const char* windowname = recvState1.header.senderId;
+                std::string title = std::string(windowname) + " Stream";
+                stream1Window = SDL_CreateWindow(title.c_str(), width * 3, height * 3, SDL_WINDOW_RESIZABLE);
+                stream1Renderer = SDL_CreateRenderer(stream1Window, nullptr);
+                stream1Texture = SDL_CreateTexture(stream1Renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, width, height);
+                SDL_SetTextureScaleMode(stream1Texture, SDL_SCALEMODE_NEAREST);
+                stream1FirstReceive = false;
+            }
+
+            int r = recv(streamSock,
+                        (char*)recvState1.body.data() + recvState1.bodyReceived,
+                        recvState1.header.size - recvState1.bodyReceived,
+                        0);
+            if (r > 0)
+            {
+                recvState1.bodyReceived += r;
+                if (recvState1.bodyReceived == (int)recvState1.header.size)
+                {
+                    if (recvState1.header.type == 1)
+                    {
+                        if (stream1Decoder.decodePacket(
+                            recvState1.body.data(),
+                            recvState1.body.size(),
+                            decodedPixels1,
+                            decodedW1, decodedH1))
+                        {
+                            SDL_UpdateTexture(stream1Texture, nullptr,decodedPixels1.data(),decodedW1 * 4);
+                            SDL_RenderClear(stream1Renderer);
+                            SDL_RenderTexture(stream1Renderer, stream1Texture, NULL, NULL);    
+                            SDL_RenderPresent(stream1Renderer);                    
+                        }
+                    }
+                    recvState1 = ReceiveState{};
+                }
+            }
+        }
+
         SDL_UpdateTexture(emuTexture, nullptr, fb.pixels, 256 * 4);
-    
         SDL_RenderClear(emuRenderer);
-        SDL_RenderClear(stream1Renderer);
-        SDL_RenderClear(stream2Renderer);
-
         SDL_RenderTexture(emuRenderer, emuTexture, NULL, NULL);
-        SDL_RenderTexture(stream1Renderer, stream1Texture, NULL, NULL);
-        SDL_RenderTexture(stream2Renderer, stream2Texture, NULL, NULL);
-
         SDL_RenderPresent(emuRenderer);
-        SDL_RenderPresent(stream1Renderer);
-        SDL_RenderPresent(stream2Renderer);
 
         auto elapsed = steady_clock::now() - start;
         double remainingMs = duration<double, std::milli>(frameDuration - elapsed).count();
@@ -307,6 +431,12 @@ int main()
 
     encoder.close();
 
+    stream1Decoder.close();
+    stream2Decoder.close();
+
+    closesocket(streamSock);
+
+    WSACleanup();
     SDL_Quit();
     return 0;
 }

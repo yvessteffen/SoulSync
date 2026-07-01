@@ -9,6 +9,10 @@ add_executable(SoulSyncServer
     relay_server.cpp
 )
 
+target_include_directories(SoulSyncServer PRIVATE
+    ${CMAKE_SOURCE_DIR}/common
+)
+
 if (WIN32)
     target_link_libraries(SoulSyncServer PRIVATE ws2_32)
 endif()

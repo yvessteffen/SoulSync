@@ -5,22 +5,15 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include "Packet.hpp"
 
 #pragma comment(lib, "ws2_32.lib")
 
 constexpr int MAX_CLIENTS = 3;
 constexpr int PORT = 5000;
 
-#pragma pack(push, 1)
-struct PacketHeader {
-    uint8_t type;
-    uint8_t senderId;
-    uint32_t size;
-};
-#pragma pack(pop)
-
 struct Client {
-    int sock;
+    SOCKET sock = INVALID_SOCKET;
     uint8_t id;
 
     PacketHeader header;
@@ -47,6 +40,10 @@ void broadcast(const PacketHeader& header, const uint8_t* data, size_t size, uin
         send(c.sock, (const char*)&header, sizeof(header), 0);
         send(c.sock, (const char*)data, (int)size, 0);
     }
+
+    std::cout << "Forwarding frame from " << (int)senderId
+          << " size=" << size << "\n";
+
 }
 
 void acceptClient(SOCKET serverSock)
@@ -59,85 +56,104 @@ void acceptClient(SOCKET serverSock)
 
     if (clients.size() >= MAX_CLIENTS)
     {
+        std::cout << "Server full, rejecting client.\n";
         closesocket(sock);
         return;
     }
 
     setNonBlocking(sock);
 
+    uint8_t id = (uint8_t)clients.size() + 1;
     Client c;
     c.sock = sock;
-    c.id = (uint8_t)clients.size();
-
+    c.id = id;
     clients.push_back(std::move(c));
-
-    std::cout << "Client connected: " << (int)c.id << "\n";
+    std::cout << "Client connected: " << (int)id << "\n";
 }
 
 void handleClient(Client& c)
 {
-    while (true)
+    if (c.headerReceived < sizeof(PacketHeader))
     {
-        // ---------- HEADER ----------
-        if (c.headerReceived < sizeof(PacketHeader))
-        {
-            char* hptr = (char*)&c.header;
-
-            int r = recv(
-                c.sock,
-                hptr + c.headerReceived,
-                (int)(sizeof(PacketHeader) - c.headerReceived),
-                0
-            );
-
-            if (r == 0) return; // disconnect
-            if (r == SOCKET_ERROR)
-            {
-                int err = WSAGetLastError();
-                if (err == WSAEWOULDBLOCK) return;
-                return;
-            }
-
-            c.headerReceived += r;
-
-            if (c.headerReceived < sizeof(PacketHeader))
-                return;
-        }
-
-        // ---------- PAYLOAD ----------
-        if (c.buffer.size() != c.header.size)
-        {
-            c.buffer.resize(c.header.size);
-            c.bytesReceived = 0;
-        }
+        uint8_t* hptr = reinterpret_cast<uint8_t*>(&c.header);
 
         int r = recv(
             c.sock,
-            (char*)c.buffer.data() + c.bytesReceived,
-            (int)(c.buffer.size() - c.bytesReceived),
+            (char*)hptr + c.headerReceived,
+            sizeof(PacketHeader) - c.headerReceived,
             0
         );
 
-        if (r == 0) return;
-        if (r == SOCKET_ERROR)
-        {
-            int err = WSAGetLastError();
-            if (err == WSAEWOULDBLOCK) return;
+        if (r <= 0) return;
+
+        c.headerReceived += r;
+
+        if (c.headerReceived < sizeof(PacketHeader))
             return;
-        }
+    }
 
-        c.bytesReceived += r;
+    if (c.header.size == 0 || c.header.size > 5 * 1024 * 1024)
+    {
+        std::cout << "INVALID HEADER SIZE: " << c.header.size << "\n";
 
-        // ---------- FULL FRAME ----------
-        if (c.bytesReceived == c.buffer.size())
-        {
-            c.header.senderId = c.id;
+        c.headerReceived = 0;
+        c.bytesReceived = 0;
+        return;
+    }
 
-            broadcast(c.header, c.buffer.data(), c.buffer.size(), c.id);
+    if (c.buffer.size() != c.header.size)
+    {
+        c.buffer.resize(c.header.size);
+        c.bytesReceived = 0;
+    }
 
-            c.headerReceived = 0;
-            c.bytesReceived = 0;
-        }
+    int r = recv(
+        c.sock,
+        (char*)c.buffer.data() + c.bytesReceived,
+        c.buffer.size() - c.bytesReceived,
+        0
+    );
+
+    if (r == 0)
+    {
+        std::cout << "Client " << (int)c.id << " disconnected\n";
+        closesocket(c.sock);
+        c.sock = INVALID_SOCKET;
+        return;
+    }
+
+    if (r < 0) return;
+
+    c.bytesReceived += r;
+
+    if (c.bytesReceived == c.buffer.size())
+    {
+        broadcast(c.header, c.buffer.data(), c.buffer.size(), c.id);
+
+        c.headerReceived = 0;
+        c.bytesReceived = 0;
+    }
+
+    if (r == SOCKET_ERROR)
+    {
+        int err = WSAGetLastError();
+
+        if (err == WSAEWOULDBLOCK)
+            return;
+
+        std::cout << "Client disconnected\n";
+        closesocket(c.sock);
+        c.sock = INVALID_SOCKET;
+        return;
+    }
+};
+
+void discardClient(Client& c)
+{
+    if (c.sock != INVALID_SOCKET)
+    {
+        closesocket(c.sock);
+        c.sock = INVALID_SOCKET;
     }
 }
 
@@ -179,7 +195,15 @@ int main()
             ++it;
         }
 
-        Sleep(1);
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(serverSock, &readfds);
+        for (auto& c : clients)
+            if (c.sock != INVALID_SOCKET)
+                FD_SET((SOCKET)c.sock, &readfds);
+
+        timeval tv { 0, 1000 };
+        select(0, &readfds, nullptr, nullptr, &tv);
     }
 
     WSACleanup();

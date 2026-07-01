@@ -13,12 +13,14 @@ add_executable(SoulSyncClient
 
     src/Video/Capture.cpp
     src/Video/Encoder.cpp
+    src/Video/Decoder.cpp
 )
 
 target_include_directories(SoulSyncClient PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}/common
 )
 
 target_link_libraries(SoulSyncClient PRIVATE
