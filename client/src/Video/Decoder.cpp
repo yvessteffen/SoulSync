@@ -47,10 +47,21 @@ bool Decoder::decodePacket(const uint8_t* data, int size,
 {
     if (!mOpen) return false;
 
-    mPacket->data = const_cast<uint8_t*>(data);
+    av_packet_unref(mPacket);
+    
+    uint8_t* buf = (uint8_t*)av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!buf) return false;
+    memcpy(buf, data, size);
+    memset(buf + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    
+    mPacket->data = buf;
     mPacket->size = size;
+    mPacket->buf  = av_buffer_create(buf, size + AV_INPUT_BUFFER_PADDING_SIZE,
+                                     av_buffer_default_free, nullptr, 0);
 
     int ret = avcodec_send_packet(mCodecCtx, mPacket);
+    av_packet_unref(mPacket);
+    
     if (ret < 0)
     {
         char err[64];
@@ -85,8 +96,8 @@ bool Decoder::decodePacket(const uint8_t* data, int size,
     }
 
     outPixels.resize(mFrame->width * mFrame->height * 4);
-    uint8_t* dst[1]   = { outPixels.data() };
-    int dstStride[1]  = { mFrame->width * 4 };
+    uint8_t* dst[1]  = { outPixels.data() };
+    int dstStride[1] = { mFrame->width * 4 };
 
     sws_scale(mSwsCtx,
               mFrame->data, mFrame->linesize,

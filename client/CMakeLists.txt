@@ -14,6 +14,8 @@ add_executable(SoulSyncClient
     src/Video/Capture.cpp
     src/Video/Encoder.cpp
     src/Video/Decoder.cpp
+
+    src/UI/WindowManager.cpp
 )
 
 target_include_directories(SoulSyncClient PRIVATE
