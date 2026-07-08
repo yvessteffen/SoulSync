@@ -1,4 +1,5 @@
 #include "Emulator/Emulator.hpp"
+#include "util/logger.h"
 
 extern "C" {
 #include <mgba/core/core.h>
@@ -14,11 +15,6 @@ extern "C" {
 #include <iostream>
 #include <SDL3/SDL.h>
 
-#ifndef NDEBUG
-#define DEBUG_LOG(x) std::cerr << x << '\n'
-#else
-#define DEBUG_LOG(x) ((void)0)
-#endif
 
 struct Emulator::Impl {
     mCore*       core   = nullptr;
@@ -69,8 +65,8 @@ bool Emulator::initialize()
     impl->core->setVideoBuffer(impl->core, impl->videoBuffer, 256);
     impl->core->setAudioBufferSize(impl->core, impl->opts.audioBuffers);
 
-    DEBUG_LOG("volume = " << impl->core->opts.volume << "\n");
-    DEBUG_LOG("audioBuffers = " << impl->core->opts.audioBuffers << "\n");
+    Log(std::string("volume = ") + std::to_string(impl->core->opts.volume) + "\n");
+    Log(std::string("audioBuffers = ") + std::to_string(impl->core->opts.audioBuffers) + "\n");
 
     return true;
 }
@@ -116,13 +112,14 @@ bool Emulator::initAudio(int targetSampleRate)
         nullptr
     );
     if (!impl->audioStream) {
-        DEBUG_LOG("Failed to open audio stream: " << SDL_GetError() << "\n");
+        Log(std::string("Failed to open audio stream: ") + SDL_GetError() + "\n");
         return false;
     }
+    
 
     SDL_AudioSpec obtained;
     SDL_GetAudioStreamFormat(impl->audioStream, nullptr, &obtained);
-    DEBUG_LOG("Audio obtained: freq=" << obtained.freq << "\n");
+    Log(std::string("Audio obtained: freq=") + std::to_string(obtained.freq) + "\n");
 
     mAudioBufferInit(&impl->resampledBuffer, 8192, obtained.channels);
     mAudioResamplerInit(&impl->resampler, mINTERPOLATOR_SINC);
@@ -137,18 +134,24 @@ void Emulator::processAudio()
     mAudioBuffer* src = impl->core->getAudioBuffer(impl->core);
     unsigned sampleRate = impl->core->audioSampleRate(impl->core);
 
+    if (sampleRate == 0 || sampleRate > 200000) 
+    {
+        return;
+    }
+
     mAudioResamplerSetSource(&impl->resampler, src, sampleRate, true);
     mAudioResamplerProcess(&impl->resampler);
 
     int16_t data[2048];
     int remaining = (int)mAudioBufferAvailable(&impl->resampledBuffer);
+
     while (remaining > 0)
     {
         int thisRead = (std::min)(remaining, (int)(sizeof(data) / 4));
-        int available = (int)mAudioBufferRead(&impl->resampledBuffer, data, thisRead) * 4;
-        if (!available) break;
-        SDL_PutAudioStreamData(impl->audioStream, data, available);
-        remaining -= available;
+        int framesRead = (int)mAudioBufferRead(&impl->resampledBuffer, data, thisRead);
+        if (!framesRead) break;
+        SDL_PutAudioStreamData(impl->audioStream, data, framesRead * 4);
+        remaining -= framesRead;
     }
 }
 

@@ -8,7 +8,12 @@ set(FFMPEG_LIB_DIR ${FFMPEG_DIR}/lib)
 add_executable(SoulSyncClient
     src/main.cpp
 
+    src/util/logger.cpp
+
     src/Emulator/Emulator.cpp
+    src/Emulator/GBEmulator.cpp
+    src/Emulator/GBAEmulator.cpp
+    src/Emulator/NDSEmulator.cpp
     src/Emulator/config.cpp
 
     src/Video/Capture.cpp
@@ -25,6 +30,7 @@ target_include_directories(SoulSyncClient PRIVATE
 
 target_link_libraries(SoulSyncClient PRIVATE
     mgba
+    #melonDS
     Shlwapi
     ws2_32
     SDL3::SDL3
@@ -42,6 +48,7 @@ target_compile_definitions(SoulSyncClient PRIVATE
     ENABLE_DIRECTORIES
     ENABLE_VFS_FD
     M_CORE_GBA
+    M_CORE_GB
 )
 
 file(GLOB FFMPEG_DLLS "${FFMPEG_DIR}/bin/*.dll")

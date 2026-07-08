@@ -1,18 +1,23 @@
-#include <iostream>
 #include "Emulator/Emulator.hpp"
+#include "Emulator/config.hpp"
 #include "Video/Capture.hpp"
 #include "Video/Framequeue.hpp"
 #include "Video/Encoder.hpp"
 #include "Video/Decoder.hpp"
+#include "Network/ReceiveState.hpp"
+#include "util/logger.h"
+
+#include <SDL3/SDL.h>
+#include "imgui.h"
+#include <imgui_impl_sdl3.h>
+#include "imgui_impl_sdlrenderer3.h"
+
+#include <iostream>
 #include <chrono>
 #include <thread>
-#include <SDL3/SDL.h>
-#include "Emulator/config.hpp"
 #include "filesystem"
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include "Packet.hpp"
 
 using namespace std::chrono;
 
@@ -20,30 +25,64 @@ constexpr auto FRAME_DURATION = duration<double>(1.0 / 59.7275);
 const int width = 240;
 const int height = 160;
 
-#ifndef NDEBUG
-#define DEBUG_LOG(x) std::cerr << x << '\n'
-#else
-#define DEBUG_LOG(x) ((void)0)
-#endif
+static SDL_FRect CalculateAspectRect(
+    int contentW, int contentH,
+    float offsetX, float offsetY,
+    int availW, int availH
+) {
+    float targetAspect = (float)contentW / (float)contentH;
+    float windowAspect = (float)availW / (float)availH;
 
-struct ReceiveState
+    SDL_FRect rect;
+
+    if (windowAspect > targetAspect) {
+        rect.h = (float)availH;
+        rect.w = rect.h * targetAspect;
+
+        rect.x = offsetX + (availW - rect.w) * 0.5f;
+        rect.y = offsetY;
+    } else {
+        rect.w = (float)availW;
+        rect.h = rect.w / targetAspect;
+
+        rect.x = offsetX;
+        rect.y = offsetY + (availH - rect.h) * 0.5f;
+    }
+
+    return rect;
+}
+
+static void MainMenuBar()
 {
-    PacketHeader header {};
-    int headerReceived = 0;
-    std::vector<uint8_t> body;
-    int bodyReceived = 0;
-    bool headerDone = false;
-};
+    if (ImGui::BeginMainMenuBar())
+    {
+        if (ImGui::BeginMenu("SoulSync"))
+        {
+            if (ImGui::MenuItem("Reset")) {}
+            ImGui::Separator();
+            if (ImGui::MenuItem("Backup Savefile")) {}
+            if (ImGui::MenuItem("Randomize and Reset")) {}
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit")) {}
+            ImGui::EndMenu();
+        }
+        
+        if (ImGui::Button("Settings")) {
+            static float v = 100.0f;
+            static float s = 3.0f;
+            ImGui::SliderFloat("Volume", &v, 0.0f, 100.0f);
+            ImGui::SliderFloat("Speed Up X", &s, 0.0f, 10.0f);
+        }
 
-struct WindowManager {
-    SDL_Window* parent = nullptr;
-    std::vector<SDL_Window*> children;
-};
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+        ImGui::EndMainMenuBar();
+    }
+}
 
-int main()
+int main(int argc, char** argv)
 {
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD);
-
+ 
     WSADATA wsa;
     WSAStartup(MAKEWORD(2,2), &wsa);
 
@@ -113,33 +152,33 @@ int main()
     int streamingFps = std::stoi(config.get("streaming", "fps", "30"));
 
     auto IP = config.get("streaming", "serverIP", "");
-    auto senderID = config.get("name", "name", "Yves");
+    auto senderID = config.get("streaming", "name", "NoName");
     PCSTR serverIP = IP.c_str();
 
     Emulator emulator;
     if (!emulator.initialize()) {
-        DEBUG_LOG("init failed");
+        Log("init failed\n");
         return 1;
     }
-    DEBUG_LOG("Emulator initialized\n");
+    Log("Emulator initialized\n");
 
     if (!emulator.loadRom(rompath)) {
-        DEBUG_LOG("Failed to load ROM\n");
+        Log("Failed to load ROM\n");
         return 1;
     }
-    DEBUG_LOG("Rom loaded\n");
+    Log("Rom loaded\n");
 
     if (!emulator.loadSave(savepath.c_str())) {
-        DEBUG_LOG("Failed to load Savegame\n");
+        Log("Failed to load Savegame\n");
         return 1;
     }
-    DEBUG_LOG("Save loaded\n");
+    Log("Save loaded\n");
 
     SOCKET streamSock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (streamSock == INVALID_SOCKET)
     {
-        DEBUG_LOG("Socket creation failed\n");
+        Log("Socket creation failed\n");
     }
 
     sockaddr_in addr{};
@@ -151,11 +190,11 @@ int main()
 
     if (result == SOCKET_ERROR)
     {
-        DEBUG_LOG("Connect failed: " << WSAGetLastError() << "\n");
+        Log("Connect failed: " + std::to_string(WSAGetLastError()) + "\n");
     }
     else
     {
-        DEBUG_LOG("Connected to relay server\n");
+        Log("Connected to relay server\n");
     }
 
     int count = 0;
@@ -169,14 +208,15 @@ int main()
             {
                 controller = SDL_OpenGamepad(joysticks[i]);
                 if (controller)
-                    DEBUG_LOG("Controller: " << SDL_GetGamepadName(controller) << "\n");
+                    Log(std::string("Controller: ") + SDL_GetGamepadName(controller) + "\n");
                 break;
             }
         }
     }
 
     //SDL_CreateWindowAndRenderer();
-    SDL_Window* emuWindow = SDL_CreateWindow("SoulLink GBA", width * 3, height * 3, SDL_WINDOW_RESIZABLE);
+    std::string emuWindowName = std::string(senderID) + " SoulSync GBA";
+    SDL_Window* emuWindow = SDL_CreateWindow(emuWindowName.c_str(), width * 4, height * 4, SDL_WINDOW_RESIZABLE);
     SDL_Window* stream1Window = nullptr;
     SDL_Window* stream2Window = nullptr;
 
@@ -193,36 +233,49 @@ int main()
     SDL_Texture* stream1Texture = nullptr;
     SDL_Texture* stream2Texture = nullptr;
 
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui_ImplSDL3_InitForSDLRenderer(emuWindow, emuRenderer);
+    ImGui_ImplSDLRenderer3_Init(emuRenderer);
+
     emulator.start();
     if (!emulator.initAudio(48000)) {
-        DEBUG_LOG("Failed to init audio\n");
+        Log("Failed to init audio\n");
         return 1;
     }
-    DEBUG_LOG("Emulator started\n");
+    else {
+        Log("Init audio\n");
+    }
+    Log("Emulator started\n");
 
     bool running = true;
     bool turboActive = false;
     bool triggerWasPressed = false;
     bool stream1FirstReceive = true;
     bool stream2FirstReceive= true;
+    std::string senderID1;
+    std::string senderID2;
 
     Capture capture(256, height);
     FrameQueue<Frame> frameQueue;
     uint64_t frameNumber = 0;
     int frame = 0;
+
     Encoder encoder;
     encoder.open(width, height, streamingFps);
+    Log("Encoder started\n");
 
     Decoder stream1Decoder;
     Decoder stream2Decoder;
 
-    stream1Decoder.open();    
+    stream1Decoder.open();   
+    Log("Decoder 1 started\n");
     stream2Decoder.open();
+    Log("Decoder 2 started\n");
+    ReceiveState recvState;
 
-    ReceiveState recvState1;
     std::vector<uint8_t> decodedPixels1;
     int decodedW1 = 0, decodedH1 = 0;
-
     std::vector<uint8_t> decodedPixels2;
     int decodedW2 = 0, decodedH2 = 0;
 
@@ -232,10 +285,13 @@ int main()
     while (running)
     {
         auto start = steady_clock::now();
+        Log("Loop started\n");
 
         SDL_Event e;
+
         while (SDL_PollEvent(&e))
         {
+            ImGui_ImplSDL3_ProcessEvent(&e);
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
                 SDL_Window* win = SDL_GetWindowFromID(e.window.windowID);
@@ -303,8 +359,11 @@ int main()
         auto frameDuration = turboActive ? FRAME_DURATION_TURBO : FRAME_DURATION;
 
         emulator.setKeys(keys);
+        Log("Emulator set Keys\n");
         emulator.runFrame();
+        Log("Emulator Ran Frame\n");
         emulator.processAudio();
+        Log("Emulator processed audio\n");
 
         const Framebuffer& fb = emulator.getFramebuffer();
         frame++;
@@ -344,69 +403,184 @@ int main()
             send(streamSock, (char*)encodedFrame.data(), h.size, 0);
         }
 
-        // receive header
-        if (!recvState1.headerDone)
+        if (!recvState.headerDone)
         {
             int r = recv(streamSock,
-                        (char*)&recvState1.header + recvState1.headerReceived,
-                        sizeof(PacketHeader) - recvState1.headerReceived,
+                        (char*)&recvState.header + recvState.headerReceived,
+                        sizeof(PacketHeader) - recvState.headerReceived,
                         0);
+
             if (r > 0)
             {
-                recvState1.headerReceived += r;
-                if (recvState1.headerReceived == sizeof(PacketHeader))
+                recvState.headerReceived += r;
+
+                if (recvState.headerReceived == sizeof(PacketHeader))
                 {
-                    recvState1.headerDone = true;
-                    recvState1.body.resize(recvState1.header.size);
-                    recvState1.bodyReceived = 0;
+                    recvState.headerDone = true;
+                    recvState.body.resize(recvState.header.size);
+                    recvState.bodyReceived = 0;
                 }
             }
         }
 
-        // receive body
-        if (recvState1.headerDone)
+        if (recvState.headerDone)
         {
-            if (stream1FirstReceive){
-                const char* windowname = recvState1.header.senderId;
-                std::string title = std::string(windowname) + " Stream";
-                stream1Window = SDL_CreateWindow(title.c_str(), width * 3, height * 3, SDL_WINDOW_RESIZABLE);
+            int r = recv(streamSock,
+                        (char*)recvState.body.data() + recvState.bodyReceived,
+                        recvState.header.size - recvState.bodyReceived,
+                        0);
+
+            if (r > 0)
+            {
+                recvState.bodyReceived += r;
+            }
+        }
+
+       if (recvState.headerDone &&
+            recvState.bodyReceived == recvState.header.size)
+        {
+            std::string sender(recvState.header.senderId);
+            if (senderID1.empty())
+            {
+                senderID1 = sender;
+
+                std::string title = sender + " Stream";
+
+                stream1Window = SDL_CreateWindow(
+                    title.c_str(),
+                    width * 4,
+                    height * 4,
+                    SDL_WINDOW_RESIZABLE);
+
                 stream1Renderer = SDL_CreateRenderer(stream1Window, nullptr);
-                stream1Texture = SDL_CreateTexture(stream1Renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, width, height);
-                SDL_SetTextureScaleMode(stream1Texture, SDL_SCALEMODE_NEAREST);
-                stream1FirstReceive = false;
-            }
 
-            int r = recv(streamSock,
-                        (char*)recvState1.body.data() + recvState1.bodyReceived,
-                        recvState1.header.size - recvState1.bodyReceived,
-                        0);
-            if (r > 0)
+                SDL_SetRenderLogicalPresentation(
+                    stream1Renderer,
+                    width,
+                    height,
+                    SDL_LOGICAL_PRESENTATION_LETTERBOX
+                );
+
+                stream1Texture = SDL_CreateTexture(
+                    stream1Renderer,
+                    SDL_PIXELFORMAT_RGBA32,
+                    SDL_TEXTUREACCESS_STREAMING,
+                    width,
+                    height);
+
+                SDL_SetTextureScaleMode(stream1Texture, SDL_SCALEMODE_NEAREST);
+            }
+            else if (sender != senderID1 && senderID2.empty())
             {
-                recvState1.bodyReceived += r;
-                if (recvState1.bodyReceived == (int)recvState1.header.size)
+                senderID2 = sender;
+
+                std::string title = sender + " Stream";
+
+                stream2Window = SDL_CreateWindow(
+                    title.c_str(),
+                    width * 3,
+                    height * 3,
+                    SDL_WINDOW_RESIZABLE
+                );
+
+                stream2Renderer = SDL_CreateRenderer(
+                    stream2Window, 
+                    nullptr
+                );
+
+                SDL_SetRenderLogicalPresentation(
+                    stream2Renderer,
+                    width,
+                    height,
+                    SDL_LOGICAL_PRESENTATION_LETTERBOX
+                );
+
+                stream2Texture = SDL_CreateTexture(
+                    stream2Renderer,
+                    SDL_PIXELFORMAT_RGBA32,
+                    SDL_TEXTUREACCESS_STREAMING,
+                    width,
+                    height
+                );
+
+                SDL_SetTextureScaleMode(
+                    stream2Texture, 
+                    SDL_SCALEMODE_NEAREST
+                );
+            }
+            if (sender == senderID1)
+            {
+                if (recvState.header.type == 1)
                 {
-                    if (recvState1.header.type == 1)
-                    {
-                        if (stream1Decoder.decodePacket(
-                            recvState1.body.data(),
-                            recvState1.body.size(),
+                    if (stream1Decoder.decodePacket(
+                            recvState.body.data(),
+                            recvState.body.size(),
                             decodedPixels1,
-                            decodedW1, decodedH1))
-                        {
-                            SDL_UpdateTexture(stream1Texture, nullptr,decodedPixels1.data(),decodedW1 * 4);
-                            SDL_RenderClear(stream1Renderer);
-                            SDL_RenderTexture(stream1Renderer, stream1Texture, NULL, NULL);    
-                            SDL_RenderPresent(stream1Renderer);                    
-                        }
+                            decodedW1,
+                            decodedH1))
+                    {
+                        SDL_UpdateTexture(
+                            stream1Texture,
+                            nullptr,
+                            decodedPixels1.data(),
+                            decodedW1 * 4);
+
+                        SDL_RenderClear(stream1Renderer);
+                        SDL_RenderTexture(stream1Renderer, stream1Texture, NULL, NULL);
+                        SDL_RenderPresent(stream1Renderer);
                     }
-                    recvState1 = ReceiveState{};
                 }
             }
-        }
+            else if (sender == senderID2)
+            {
+                if (recvState.header.type == 1)
+                {
+                    if (stream2Decoder.decodePacket(
+                            recvState.body.data(),
+                            recvState.body.size(),
+                            decodedPixels2,
+                            decodedW2,
+                            decodedH2))
+                    {
+                        SDL_UpdateTexture(
+                            stream2Texture,
+                            nullptr,
+                            decodedPixels2.data(),
+                            decodedW2 * 4);
+
+                        SDL_RenderClear(stream2Renderer);
+                        SDL_RenderTexture(stream2Renderer, stream2Texture, NULL, NULL);
+                        SDL_RenderPresent(stream2Renderer);
+                    }
+                }
+            }
+            recvState = ReceiveState{};
+        } 
+
+        int w, h;
+        SDL_GetRenderOutputSize(emuRenderer, &w, &h);
+
+        float menuBarHeight = ImGui::GetFrameHeight();
+
+        SDL_FRect dst = CalculateAspectRect(
+            240, 160,
+            0, menuBarHeight,
+            w, h - menuBarHeight
+        );
 
         SDL_UpdateTexture(emuTexture, nullptr, fb.pixels, 256 * 4);
         SDL_RenderClear(emuRenderer);
-        SDL_RenderTexture(emuRenderer, emuTexture, NULL, NULL);
+        SDL_RenderTexture(emuRenderer, emuTexture, nullptr, &dst);
+
+        ImGui_ImplSDLRenderer3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+
+        MainMenuBar();
+
+        ImGui::Render();
+        ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), emuRenderer);
+
         SDL_RenderPresent(emuRenderer);
 
         auto elapsed = steady_clock::now() - start;

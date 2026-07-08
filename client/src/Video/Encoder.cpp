@@ -45,7 +45,8 @@ bool Encoder::open(int width, int height, int fps)
     mCodecCtx->pix_fmt   = AV_PIX_FMT_YUV444P;
     mCodecCtx->gop_size  = fps * 2;
 
-    av_opt_set(mCodecCtx->priv_data, "crf",     "16",        0);
+    av_opt_set(mCodecCtx->priv_data, "preset", "slow", 0);
+    av_opt_set(mCodecCtx->priv_data, "crf",     "14",        0);
     av_opt_set(mCodecCtx->priv_data, "profile", "high444",   0);
     av_opt_set(mCodecCtx->priv_data, "tune",    "animation", 0);
 
